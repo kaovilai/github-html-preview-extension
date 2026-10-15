@@ -11,6 +11,10 @@
 This Chrome extension allows you to instantly preview HTML files on GitHub. With a single click, you can see the rendered HTML in a new tab, and it also supports private repositories when configured with your GitHub token.<br/>
 - Instant Preview: Click the preview button on any GitHub HTML page to see the rendered results in a new tab.
 - Private Repository Support: Configure your GitHub token to preview HTML files in private repositories.
+- Pull Request Diff Preview: On a pull request's "Files changed" page (also commit-range and single-commit views), every `.html` file gets a **Preview** button. It renders the file inline with additions outlined in **green**, changed elements outlined in amber, and every deletion shown as a red **−** bubble you can click to see what was removed (rendered and as HTML source). Toggle **Side by side** for a before/after view with synced scrolling, and use the arrows to jump between changes.
+  - Scripts and inline event handlers are stripped from the previewed HTML, so untrusted PR content never runs; the page is rendered in a sandboxed frame.
+  - Repo-relative stylesheets are inlined and relative images/links resolve against GitHub. Images in private repositories won't load.
+  - Content is fetched from the GitHub API; add a token in the popup (or log in) for private repositories or to avoid the anonymous rate limit.
 - Quick Access: Use Ctrl + Shift + Y (Windows/Linux) or Command + Shift + Y (Mac), or right-click and select "Preview HTML" from the context menu to open the preview.
 
 > Works with [Github Html Preview Page](https://github.com/dohyeon5626/github-html-preview-page), [Serverless Functions](https://github.com/dohyeon5626/serverless-functions/tree/main/github-html-preview)

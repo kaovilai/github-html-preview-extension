@@ -1,7 +1,8 @@
-import { addContextMenusOnClickedListener, addMessageListener, addOnCommandListener, addRuntimeInstalledListener, addTabUpdatedListener, createContextMenu, createTab, executeScript, executeScriptFile, getActiveTab, getData, getRedirectUrl, launchWebAuthFlow, queryInTab, removeTab, setData, updateTab } from '../shared/chrome';
+import { getExtensionUrl, addContextMenusOnClickedListener, addMessageListener, addOnCommandListener, addRuntimeInstalledListener, addTabUpdatedListener, createContextMenu, createTab, executeScript, executeScriptFile, getActiveTab, getData, getRedirectUrl, launchWebAuthFlow, queryInTab, removeTab, setData, updateTab } from '../shared/chrome';
 import { getGithubOauthToken, getProxyToken } from '../shared/api';
 import { MessageType, StorageType } from '../shared/type';
 import { getHtmlPreviewPageUrl, parseGithubUrl } from '../core/auth-service';
+import { getFileContent, getPrDiffInfo, toResponse } from '../core/github-api';
 
 addTabUpdatedListener(
     (url: string, tabId: number) => {
@@ -38,7 +39,7 @@ addOnCommandListener(async (command) => {
 });
 
 addMessageListener(
-    (request, callback) => {
+    (request, callback, sender) => {
         (async () => {
             if(request.action === MessageType.START_OAUTH) {
                 const redirectUrl = getRedirectUrl("github");
@@ -74,6 +75,15 @@ addMessageListener(
                     });
                 });
                 callback(null);
+            } else if (request.action === MessageType.FETCH_PR_DIFF_INFO || request.action === MessageType.FETCH_FILE_CONTENT) {
+                // these use the stored GitHub token, so only the extension's own viewer page may ask
+                if (!sender.url?.startsWith(getExtensionUrl("viewer/viewer.html"))) {
+                    callback({ ok: false, error: "Request not allowed from this context." });
+                } else if (request.action === MessageType.FETCH_PR_DIFF_INFO) {
+                    callback(await toResponse(() => getPrDiffInfo(request.payload)));
+                } else {
+                    callback(await toResponse(() => getFileContent(request.payload)));
+                }
             }
         })();
         

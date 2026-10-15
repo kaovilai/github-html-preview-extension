@@ -42,15 +42,17 @@ export const addRuntimeInstalledListener = (func: () => void) => {
     chrome.runtime.onInstalled.addListener(func);
 }
 
+export const getExtensionUrl = (path: string) => chrome.runtime.getURL(path);
+
 export const getNowVersion = () => chrome.runtime.getManifest().version;
 
-export const addMessageListener = (func: (request: any, callback: (response: any) => void) => void) => {
-    chrome.runtime.onMessage.addListener((request, sender, callback) => func(request, callback));
+export const addMessageListener = (func: (request: any, callback: (response: any) => void, sender: chrome.runtime.MessageSender) => void) => {
+    chrome.runtime.onMessage.addListener((request, sender, callback) => func(request, callback, sender));
 }
 
-export const sendMessage = (action: MessageType) => {
+export const sendMessage = (action: MessageType, payload?: any) => {
     return new Promise<any>(resolve => {
-        chrome.runtime.sendMessage({action}, resolve);
+        chrome.runtime.sendMessage({action, payload}, resolve);
     });
 }
 

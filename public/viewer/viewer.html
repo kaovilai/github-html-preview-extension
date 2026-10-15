@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HTML diff preview</title>
+    <link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+    <header id="toolbar">
+        <div class="group" role="group" aria-label="View mode">
+            <button id="mode-inline" class="seg" type="button">Inline</button>
+            <button id="mode-split" class="seg" type="button">Side by side</button>
+        </div>
+        <div class="legend">
+            <span class="swatch added"></span>Added
+            <span class="bubble">&minus;</span>Removed (click it)
+            <span class="swatch modified"></span>Changed
+        </div>
+        <span id="stats"></span>
+        <div class="group" role="group" aria-label="Navigate changes">
+            <button id="prev" class="seg" type="button" title="Previous change">&uarr;</button>
+            <button id="next" class="seg" type="button" title="Next change">&darr;</button>
+        </div>
+    </header>
+    <div id="notice" hidden></div>
+    <main id="stage"><div id="status">Loading&hellip;</div></main>
+    <script src="../viewer.js"></script>
+</body>
+</html>

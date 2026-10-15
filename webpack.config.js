@@ -7,7 +7,9 @@ module.exports = {
       "background": ["./src/app/background.ts"],
       "popup": ["./src/app/popup.ts"],
       "html-page-content": ["./src/app/html-page-content.ts"],
-      "preview-page-content": ["./src/app/preview-page-content.ts"]
+      "preview-page-content": ["./src/app/preview-page-content.ts"],
+      "pr-diff-content": ["./src/app/pr-diff-content.ts"],
+      "viewer": ["./src/app/viewer.ts"]
    },
    output: {
       path: path.join(__dirname, "dist"),
