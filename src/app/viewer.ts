@@ -1,7 +1,7 @@
 import { getData, sendMessage, setData } from "../shared/chrome";
 import { MessageType, StorageType } from "../shared/type";
-import { buildViews, Views } from "../core/html-diff";
-import { getStylesheetPaths, prepareDocument } from "../core/html-prepare";
+import { buildViews, Side, Views } from "../core/html-diff";
+import { getStylesheetPaths, loadStylesheets, PrepareContext, rewriteUrls, sanitizeDocument } from "../core/html-prepare";
 import type { PrDiffInfo } from "../core/github-api";
 
 type Mode = "inline" | "split";
@@ -31,15 +31,9 @@ const call = async <T>(action: MessageType, payload: any): Promise<T> => {
 
 const fetchText = (filePath: string, ref: string) => call<string>(MessageType.FETCH_FILE_CONTENT, { owner, repo, path: filePath, ref });
 
-const loadSheets = async (html: string, filePath: string, ref: string): Promise<Map<string, string>> => {
-    const sheets = new Map<string, string>();
+const loadSheets = (html: string, filePath: string, ref: string): Promise<Map<string, string>> => {
     const paths = getStylesheetPaths(new DOMParser().parseFromString(html, "text/html"), filePath);
-    await Promise.all(paths.map(async sheetPath => {
-        try {
-            sheets.set(sheetPath, await fetchText(sheetPath, ref));
-        } catch (ignore) {}
-    }));
-    return sheets;
+    return loadStylesheets({ owner, repo, ref }, paths, sheetPath => fetchText(sheetPath, ref));
 }
 
 const makeFrame = (html: string): HTMLIFrameElement => {
@@ -111,18 +105,18 @@ const run = async () => {
         loadSheets(afterHtml, path, info.after)
     ]);
 
+    const contexts: { [side in Side]: PrepareContext } = {
+        before: { owner, repo, ref: info.before || "", path: beforePath },
+        after: { owner, repo, ref: info.after, path }
+    };
+    const sheets = { before: beforeSheets, after: afterSheets };
+
+    // diff the sanitized sources as written; URLs are rewritten afterwards so unchanged relative URLs stay unchanged
     const views: Views = buildViews(side => {
-        const before = side === "before";
-        const doc = new DOMParser().parseFromString(before ? beforeHtml : afterHtml, "text/html");
-        prepareDocument(doc, {
-            owner,
-            repo,
-            ref: before ? info.before || "" : info.after,
-            path: before ? beforePath : path,
-            sheets: before ? beforeSheets : afterSheets
-        });
+        const doc = new DOMParser().parseFromString(side === "before" ? beforeHtml : afterHtml, "text/html");
+        sanitizeDocument(doc, contexts[side].path, sheets[side]);
         return doc;
-    });
+    }, (root, side) => rewriteUrls(root, contexts[side]));
 
     if (status === "added") showNotice("New file: everything is shown as added.");
     else if (status === "removed") showNotice("File deleted: its previous content is in the red bubble (inline) or left pane (side by side).");

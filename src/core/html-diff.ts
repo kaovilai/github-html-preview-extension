@@ -18,10 +18,14 @@ export interface Views {
     stats: DiffStats;
 }
 
+export type Side = "before" | "after";
+
 interface Options {
     markOld: boolean;
     bubbles: boolean;
     pageCss: string;
+    // URL-rewrites nodes copied out of the "before" document into a removal bubble
+    rewriteOld: (node: Node) => void;
 }
 
 interface Op {
@@ -40,6 +44,12 @@ const MAX_DP_CELLS = 4_000_000;
 const MAX_BUBBLE_CSS_BYTES = 60_000;
 // children of these are text payloads, wrapping them in markup would break them
 const LEAF_TAGS = new Set(["STYLE", "TEXTAREA", "SCRIPT", "TITLE", "OPTION"]);
+const PRESERVE_WHITESPACE = "pre, textarea, listing, plaintext";
+// whitespace between two of these is a visible space; between blocks it is just formatting
+const INLINE_TAGS = new Set(["A", "ABBR", "B", "BDI", "BDO", "BIG", "BR", "BUTTON", "CITE", "CODE", "DATA", "DEL", "DFN", "EM", "FONT", "I", "IMG", "INPUT", "INS", "KBD", "LABEL", "MARK", "Q", "S", "SAMP", "SELECT", "SMALL", "SPAN", "STRIKE", "STRONG", "SUB", "SUP", "SVG", "TEXTAREA", "TIME", "TT", "U", "VAR", "WBR"]);
+// parents whose children the HTML parser would reject or relocate if they were an unknown element
+const TABLE_SECTIONS = new Set(["TABLE", "THEAD", "TBODY", "TFOOT"]);
+const NO_CUSTOM_CHILDREN = new Set(["SELECT", "OPTGROUP", "DATALIST", "COLGROUP"]);
 
 const MARK_CSS = `
 [data-hp-added]{outline:2px solid #1a7f37!important;outline-offset:-2px;background-image:linear-gradient(rgba(46,160,67,.22),rgba(46,160,67,.22))!important}
@@ -68,8 +78,33 @@ pre{margin:0;padding:8px 10px;overflow:auto;background:#f6f8fa;font:11px/1.45 ui
 
 const sigCache = new WeakMap<Node, string>();
 
+const isPreserved = (node: Node): boolean => !!node.parentElement?.closest(PRESERVE_WHITESPACE);
+
+const isInlineNode = (node: Node | null): boolean => {
+    return !!node && (node.nodeType === 3 || (node.nodeType === 1 && INLINE_TAGS.has((node as Element).tagName.toUpperCase())));
+}
+
 const isMeaningful = (node: Node): boolean => {
-    return node.nodeType === 1 || (node.nodeType === 3 && (node.textContent || "").trim() !== "");
+    if (node.nodeType === 1) return true;
+    if (node.nodeType !== 3) return false;
+    if ((node.textContent || "").trim() !== "") return true;
+    // whitespace-only text is formatting, unless it renders (inside <pre>, or a space between inline content)
+    return isPreserved(node) || (isInlineNode(node.previousSibling) && isInlineNode(node.nextSibling));
+}
+
+// Text compares the way it renders: runs of whitespace collapse, but a leading/trailing
+// space that separates inline content (and everything inside <pre>) still counts.
+const textSignature = (node: Node): string => {
+    const text = node.textContent || "";
+    if (isPreserved(node)) return "#" + text;
+
+    let collapsed = text.replace(/\s+/g, " ");
+    const parent = node.parentElement;
+    if (parent && !INLINE_TAGS.has(parent.tagName.toUpperCase())) {
+        if (!node.previousSibling) collapsed = collapsed.replace(/^ /, "");
+        if (!node.nextSibling) collapsed = collapsed.replace(/ $/, "");
+    }
+    return "#" + collapsed;
 }
 
 const meaningfulChildren = (parent: Node): Node[] => Array.from(parent.childNodes).filter(isMeaningful);
@@ -79,7 +114,7 @@ const sig = (node: Node): string => {
     if (value === undefined) {
         value = node.nodeType === 1
             ? (node as Element).outerHTML
-            : "#" + (node.textContent || "").replace(/\s+/g, " ").trim();
+            : textSignature(node);
         sigCache.set(node, value);
     }
     return value;
@@ -211,7 +246,7 @@ const serialize = (node: Node): string => {
     return node.nodeType === 1 ? (node as Element).outerHTML : (node.textContent || "").trim();
 }
 
-const createBubble = (doc: Document, removed: Node[], pageCss: string): HTMLElement => {
+const createBubble = (doc: Document, removed: Node[], opts: Options): HTMLElement => {
     const host = doc.createElement("hp-del");
     const template = doc.createElement("template");
     template.setAttribute("shadowrootmode", "open");
@@ -234,14 +269,24 @@ const createBubble = (doc: Document, removed: Node[], pageCss: string): HTMLElem
     head.textContent = removed.length === 1 ? "Removed" : `Removed (${removed.length} nodes)`;
     pop.appendChild(head);
 
+    // The removed content (and the page's own CSS) lives in a nested shadow root, so page
+    // rules like `summary{display:none}` can't reach the bubble's controls above it.
     const render = doc.createElement("div");
     render.className = "render";
-    if (pageCss) {
+    const renderRoot = doc.createElement("template");
+    renderRoot.setAttribute("shadowrootmode", "open");
+    if (opts.pageCss) {
         const pageStyle = doc.createElement("style");
-        pageStyle.textContent = pageCss;
-        render.appendChild(pageStyle);
+        pageStyle.textContent = opts.pageCss;
+        opts.rewriteOld(pageStyle);
+        renderRoot.content.appendChild(pageStyle);
     }
-    removed.forEach(node => render.appendChild(node.cloneNode(true)));
+    removed.forEach(node => {
+        const copy = node.cloneNode(true);
+        opts.rewriteOld(copy);
+        renderRoot.content.appendChild(copy);
+    });
+    render.appendChild(renderRoot);
     pop.appendChild(render);
 
     const source = doc.createElement("details");
@@ -258,6 +303,36 @@ const createBubble = (doc: Document, removed: Node[], pageCss: string): HTMLElem
     root.appendChild(details);
     host.appendChild(template);
     return host;
+}
+
+// Inserts the bubble somewhere the HTML parser will keep it: parsing the serialized
+// document would otherwise move it out of tables or drop it from option lists.
+const placeBubble = (parent: Element, before: Node | null, bubble: HTMLElement) => {
+    const doc = parent.ownerDocument!;
+    const tag = parent.tagName.toUpperCase();
+    const wrapInCell = (): HTMLElement => {
+        const cell = doc.createElement("td");
+        cell.setAttribute("style", "padding:0;border:0");
+        cell.appendChild(bubble);
+        return cell;
+    };
+
+    if (TABLE_SECTIONS.has(tag)) {
+        const row = doc.createElement("tr");
+        const cell = wrapInCell();
+        cell.setAttribute("colspan", "1000");
+        row.appendChild(cell);
+        parent.insertBefore(row, before);
+    } else if (tag === "TR") {
+        parent.insertBefore(wrapInCell(), before);
+    } else if (NO_CUSTOM_CHILDREN.has(tag)) {
+        // show it next to the whole control instead
+        let target: Element = tag === "COLGROUP" ? parent.closest("table") || parent : parent;
+        while (target.parentElement && NO_CUSTOM_CHILDREN.has(target.parentElement.tagName.toUpperCase())) target = target.parentElement;
+        target.parentNode!.insertBefore(bubble, target);
+    } else {
+        parent.insertBefore(bubble, before);
+    }
 }
 
 const diffChildren = (oldParent: Node, newParent: Node, opts: Options, stats: DiffStats) => {
@@ -288,7 +363,7 @@ const diffChildren = (oldParent: Node, newParent: Node, opts: Options, stats: Di
     let run: Node[] = [];
     const flushRun = (before: Node | null) => {
         if (!run.length) return;
-        newParent.insertBefore(createBubble(newParent.ownerDocument!, run, opts.pageCss), before);
+        placeBubble(newParent as Element, before, createBubble(newParent.ownerDocument!, run, opts));
         run = [];
     };
     for (const op of ops) {
@@ -301,12 +376,22 @@ const diffChildren = (oldParent: Node, newParent: Node, opts: Options, stats: Di
     flushRun(null);
 }
 
+const diffBodies = (oldBody: Element, newBody: Element, opts: Options, stats: DiffStats) => {
+    if (attributeSignature(oldBody) !== attributeSignature(newBody)) {
+        newBody.setAttribute("data-hp-modified", "");
+        if (opts.markOld) oldBody.setAttribute("data-hp-modified", "");
+        stats.modified++;
+    }
+    diffChildren(oldBody, newBody, opts, stats);
+}
+
 const collectPageCss = (doc: Document): string => {
     const css = Array.from(doc.querySelectorAll("style")).map(style => style.textContent || "").join("\n");
     return css.length > MAX_BUBBLE_CSS_BYTES ? "" : css;
 }
 
-const finalize = (doc: Document): string => {
+const finalize = (doc: Document, side: Side, rewrite: (root: Node, side: Side) => void): string => {
+    rewrite(doc, side);
     const style = doc.createElement("style");
     style.setAttribute("data-hp-style", "");
     style.textContent = MARK_CSS;
@@ -314,16 +399,23 @@ const finalize = (doc: Document): string => {
     return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
 }
 
-// `make` must return a fresh, prepared document on every call (the diff mutates them).
-export const buildViews = (make: (side: "before" | "after") => Document): Views => {
+// `make` must return a fresh document on every call (the diff mutates them). The documents are
+// compared as written; `rewrite` then makes each side's resource URLs renderable, so a relative
+// URL that did not change in the source is not reported as changed.
+export const buildViews = (make: (side: Side) => Document, rewrite: (root: Node, side: Side) => void): Views => {
     const stats: DiffStats = { added: 0, removed: 0, modified: 0 };
 
     const oldDoc = make("before"), newDoc = make("after");
-    diffChildren(oldDoc.body, newDoc.body, { markOld: true, bubbles: false, pageCss: "" }, stats);
+    diffBodies(oldDoc.body, newDoc.body, { markOld: true, bubbles: false, pageCss: "", rewriteOld: () => {} }, stats);
 
     const inlineOld = make("before"), inlineNew = make("after");
     const pageCss = collectPageCss(inlineOld);
-    diffChildren(inlineOld.body, inlineNew.body, { markOld: false, bubbles: true, pageCss }, { added: 0, removed: 0, modified: 0 });
+    diffBodies(inlineOld.body, inlineNew.body, { markOld: false, bubbles: true, pageCss, rewriteOld: node => rewrite(node, "before") }, { added: 0, removed: 0, modified: 0 });
 
-    return { before: finalize(oldDoc), after: finalize(newDoc), inline: finalize(inlineNew), stats };
+    return {
+        before: finalize(oldDoc, "before", rewrite),
+        after: finalize(newDoc, "after", rewrite),
+        inline: finalize(inlineNew, "after", rewrite),
+        stats
+    };
 }
